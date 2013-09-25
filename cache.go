@@ -1,52 +1,123 @@
 package dnscache
 
 import (
+	"github.com/rcrowley/go-metrics"
 	"net"
+	"strings"
+	"sync"
 	"time"
 )
 
+var (
+	cacheHit      = metrics.NewMeter()
+	cacheMiss     = metrics.NewMeter()
+	lookupErr     = metrics.NewMeter()
+	lookupRecover = metrics.NewMeter()
+)
+
 type record struct {
-	hosts []string
-	next  chan string
+	addrs   []string
+	next    chan string
+	expires time.Time
+	stop    chan bool
 }
 
-func Record(hosts []string) *record {
-	// TODO: ipv6?
+func Record(ttl time.Duration, addrs []string) *record {
 	rec := &record{
-		hosts: hosts,
-		next:  make(chan string),
+		addrs:   make([]string, 0),
+		next:    make(chan string),
+		expires: time.Now().Add(ttl),
+		stop:    make(chan bool),
 	}
+	for _, addr := range addrs {
+		if !strings.Contains(addr, ":") {
+			rec.addrs = append(rec.addrs, addr)
+		}
+	}
+
 	go func() {
 		i := 0
+		numAddrs := len(rec.addrs)
 		for {
-			if i >= len(hosts) {
-				i = 0
+			select {
+			default:
+				if i >= numAddrs {
+					i = 0
+				}
+				rec.next <- rec.addrs[i]
+				i += 1
+			case <-rec.stop:
+				return
 			}
-			rec.next <- rec.hosts[i]
-			i += 1
 		}
 	}()
+
 	return rec
 }
 
-func (r *record) Host() string {
+func (r *record) Addr() string {
 	return <-r.next
 }
 
+func (r *record) Expired() bool {
+	valid := time.Now().Before(r.expires)
+	if !valid {
+		go func() { r.stop <- true }()
+	}
+	return !valid
+}
+
 type Cache struct {
-	hosts map[string]*record
-	ttl   time.Duration
+	recs map[string]*record
+	ttl  time.Duration
+	l    sync.RWMutex
 }
 
 func New(ttl time.Duration) *Cache {
 	return &Cache{
-		hosts: make(map[string]*record),
-		ttl:   ttl,
+		recs: make(map[string]*record),
+		ttl:  ttl,
 	}
 }
 
-// Analogous to net.LookupHost. It looks up the given host using the local
-// resolver. It returns an array of that host's addresses.
-func (c *Cache) LookupHost(addr string) (name []string, err error) {
-	return net.LookupHost(addr)
+func (c *Cache) LookupHost(host string) (addr string, err error) {
+	cached, expired, ok := c.cachedAddr(host)
+	if ok && !expired {
+		cacheHit.Mark(1)
+		return cached, nil
+	}
+
+	// Value is not cached, look it up
+	hosts, err := net.LookupHost(host)
+
+	// In the case there was an error looking up the value AND we have a cached
+	// value (that has expired), just return the cached value.
+	if err != nil && ok {
+		lookupRecover.Mark(1)
+		return cached, nil
+	}
+
+	if err != nil {
+		lookupErr.Mark(1)
+		return "", err
+	}
+
+	rec := Record(c.ttl, hosts)
+	c.l.Lock()
+	c.recs[host] = rec
+	c.l.Unlock()
+	cacheMiss.Mark(1)
+	return rec.Addr(), nil
+}
+
+func (c *Cache) cachedAddr(host string) (addr string, expired bool, ok bool) {
+	c.l.RLock()
+	rec, ok := c.recs[host]
+	c.l.RUnlock()
+
+	if ok {
+		return rec.Addr(), rec.Expired(), true
+	}
+
+	return "", true, false
 }

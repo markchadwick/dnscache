@@ -1,0 +1,2 @@
+gom 'github.com/markchadwick/spec',   :branch => 'master'
+gom 'github.com/rcrowley/go-metrics', :branch => 'master'
