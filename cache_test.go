@@ -57,4 +57,15 @@ var _ = spec.Suite("Host Lookup", func(c *spec.C) {
 		c.Assert(cacheHit.Count()).Equals(hit + 1)
 		c.Assert(cacheMiss.Count()).Equals(miss + 1)
 	})
+
+	c.It("should lookup an IP", func(c *spec.C) {
+		_, err := cache.LookupHost("192.168.1.1")
+		c.Assert(err).IsNil()
+	})
+
+	c.It("should look up localhost", func(c *spec.C) {
+		addr, err := cache.LookupHost("localhost")
+		c.Assert(err).IsNil()
+		c.Assert(addr).Equals("127.0.0.1")
+	})
 })
