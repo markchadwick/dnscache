@@ -15,6 +15,13 @@ var (
 	lookupRecover = metrics.NewMeter()
 )
 
+func init() {
+	metrics.DefaultRegistry.Register("dnscache.cache.hit", cacheHit)
+	metrics.DefaultRegistry.Register("dnscache.cache.miss", cacheMiss)
+	metrics.DefaultRegistry.Register("dnscache.lookup.err", lookupErr)
+	metrics.DefaultRegistry.Register("dnscache.lookup.recover", lookupRecover)
+}
+
 type record struct {
 	addrs   []string
 	next    chan string
