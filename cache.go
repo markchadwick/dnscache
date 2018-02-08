@@ -1,11 +1,13 @@
 package dnscache
 
 import (
-	"github.com/rcrowley/go-metrics"
+	"math/rand"
 	"net"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/rcrowley/go-metrics"
 )
 
 var (
@@ -23,18 +25,14 @@ func init() {
 }
 
 type record struct {
-	addrs   []string
-	next    chan string
-	expires time.Time
-	stop    chan bool
+	addrs []string
+	next  chan string
 }
 
 func Record(ttl time.Duration, addrs []string) *record {
 	rec := &record{
-		addrs:   make([]string, 0),
-		next:    make(chan string),
-		expires: time.Now().Add(ttl),
-		stop:    make(chan bool),
+		addrs: make([]string, 0),
+		next:  make(chan string),
 	}
 	for _, addr := range addrs {
 		if !strings.Contains(addr, ":") {
@@ -45,16 +43,18 @@ func Record(ttl time.Duration, addrs []string) *record {
 	go func() {
 		i := 0
 		numAddrs := len(rec.addrs)
+		expired := time.After(ttl)
 		for {
 			select {
+			case <-expired:
+				close(rec.next)
+				return
 			default:
 				if i >= numAddrs {
 					i = 0
 				}
 				rec.next <- rec.addrs[i]
 				i += 1
-			case <-rec.stop:
-				return
 			}
 		}
 	}()
@@ -62,22 +62,25 @@ func Record(ttl time.Duration, addrs []string) *record {
 	return rec
 }
 
-func (r *record) Addr() string {
-	return <-r.next
+// Returns the next address to use if the record is not expired.
+func (r *record) NextAddr() (addr string, expired bool) {
+	addr, ok := <-r.next
+	// if the channel is closed, the record has expired
+	if !ok {
+		return "", true
+	}
+	return addr, false
 }
 
-func (r *record) Expired() bool {
-	valid := time.Now().Before(r.expires)
-	if !valid {
-		go func() { r.stop <- true }()
-	}
-	return !valid
+// Returns a random address ignoring the record expiry.
+func (r *record) RandomAddr() string {
+	return r.addrs[rand.Intn(len(r.addrs))]
 }
 
 type Cache struct {
 	recs map[string]*record
 	ttl  time.Duration
-	l    sync.RWMutex
+	sync.RWMutex
 }
 
 func New(ttl time.Duration) *Cache {
@@ -88,43 +91,40 @@ func New(ttl time.Duration) *Cache {
 }
 
 func (c *Cache) LookupHost(host string) (addr string, err error) {
-	cached, expired, ok := c.cachedAddr(host)
-	if ok && !expired {
-		cacheHit.Mark(1)
-		return cached, nil
+	c.RLock()
+	rec, haveRecord := c.recs[host]
+	c.RUnlock()
+	if haveRecord {
+		// if we have a cached & active record, return the next address
+		if cached, expired := rec.NextAddr(); !expired {
+			cacheHit.Mark(1)
+			return cached, nil
+		}
 	}
 
-	// Value is not cached, look it up
+	// Value is not cached, look it up. We synchronize this section to prevent
+	// many goroutines from doing redundant lookups.
+	c.Lock()
+	defer c.Unlock()
 	hosts, err := net.LookupHost(host)
 
 	// In the case there was an error looking up the value AND we have a cached
 	// value (that has expired), just return the cached value.
-	if err != nil && ok {
+	if err != nil && haveRecord {
 		lookupRecover.Mark(1)
-		return cached, nil
+		return rec.RandomAddr(), nil
 	}
 
+	// no cache and the lookup failed, just proxy the error
 	if err != nil {
 		lookupErr.Mark(1)
 		return "", err
 	}
 
-	rec := Record(c.ttl, hosts)
-	c.l.Lock()
+	// store the new record
+	rec = Record(c.ttl, hosts)
 	c.recs[host] = rec
-	c.l.Unlock()
 	cacheMiss.Mark(1)
-	return rec.Addr(), nil
-}
-
-func (c *Cache) cachedAddr(host string) (addr string, expired bool, ok bool) {
-	c.l.RLock()
-	rec, ok := c.recs[host]
-	c.l.RUnlock()
-
-	if ok {
-		return rec.Addr(), rec.Expired(), true
-	}
-
-	return "", true, false
+	addr, _ = rec.NextAddr()
+	return addr, nil
 }
