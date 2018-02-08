@@ -81,7 +81,7 @@ func (r *record) RandomAddr() string {
 type Cache struct {
 	recs map[string]*record
 	ttl  time.Duration
-	l    sync.RWMutex
+	sync.RWMutex
 }
 
 func New(ttl time.Duration) *Cache {
@@ -92,9 +92,9 @@ func New(ttl time.Duration) *Cache {
 }
 
 func (c *Cache) LookupHost(host string) (addr string, err error) {
-	c.l.RLock()
+	c.RLock()
 	rec, haveRecord := c.recs[host]
-	c.l.RUnlock()
+	c.RUnlock()
 	if haveRecord {
 		// if we have a cached & active record, return the next address
 		if cached, expired := rec.NextAddr(); !expired {
@@ -103,7 +103,10 @@ func (c *Cache) LookupHost(host string) (addr string, err error) {
 		}
 	}
 
-	// Value is not cached, look it up
+	// Value is not cached, look it up. We synchronize this section to prevent
+	// many goroutines from doing redundant lookups.
+	c.Lock()
+	defer c.Unlock()
 	hosts, err := net.LookupHost(host)
 
 	// In the case there was an error looking up the value AND we have a cached
@@ -121,9 +124,7 @@ func (c *Cache) LookupHost(host string) (addr string, err error) {
 
 	// store the new record
 	rec = Record(c.ttl, hosts)
-	c.l.Lock()
 	c.recs[host] = rec
-	c.l.Unlock()
 	cacheMiss.Mark(1)
 	addr, _ = rec.NextAddr()
 	return addr, nil
