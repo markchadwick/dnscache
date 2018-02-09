@@ -106,10 +106,19 @@ func (c *Cache) LookupHost(host string) (addr string, err error) {
 	// many goroutines from doing redundant lookups.
 	c.Lock()
 	defer c.Unlock()
+	// see if another goroutine has set the record since we obtained the lock
+	if rec, haveRecord = c.recs[host]; haveRecord {
+		if cached, expired := rec.NextAddr(); !expired {
+			cacheHit.Mark(1)
+			return cached, nil
+		}
+	}
+
+	// we still dont have an active record, make a DNS call
 	hosts, err := net.LookupHost(host)
 
 	// In the case there was an error looking up the value AND we have a cached
-	// value (that has expired), just return the cached value.
+	// value (that has expired), just return a random addr from the cached value.
 	if err != nil && haveRecord {
 		lookupRecover.Mark(1)
 		return rec.RandomAddr(), nil
