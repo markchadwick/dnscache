@@ -3,7 +3,7 @@ load("@io_bazel_rules_go//go:def.bzl", "go_library", "go_test", "go_prefix")
 go_prefix("github.com/markchadwick")
 
 go_library(
-    name = "go_default_library",
+    name = "dnscache",
     srcs = [
         "cache.go",
         "roundtripper.go",
@@ -22,7 +22,7 @@ go_test(
         "dnscache_test.go",
         "roundtripper_test.go",
     ],
-    library = ":go_default_library",
+    library = ":dnscache",
     deps = [
         "@com_github_markchadwick_spec//:go_default_library",
     ],
