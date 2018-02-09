@@ -5,6 +5,27 @@ import (
 	"time"
 )
 
+func nextAddr(r *record) string {
+	addr, _ := r.NextAddr()
+	return addr
+}
+
+func isExpired(r *record) bool {
+	timeout := time.After(time.Second)
+	// checking for expiry is a little racey since time.After does not fire
+	// instantly for a 0 TTL. So we check in loop for up to a second.
+	for {
+		select {
+		case <-timeout:
+			return false
+		default:
+			if _, isExpired := r.NextAddr(); isExpired {
+				return isExpired
+			}
+		}
+	}
+}
+
 var _ = spec.Suite("Record", func(c *spec.C) {
 	c.It("should cycle throught hosts", func(c *spec.C) {
 		rec := Record(time.Second, []string{
@@ -12,20 +33,20 @@ var _ = spec.Suite("Record", func(c *spec.C) {
 			"192.168.1.2",
 			"192.168.1.3",
 		})
-		c.Assert(rec.Addr()).Equals("192.168.1.1")
-		c.Assert(rec.Addr()).Equals("192.168.1.2")
-		c.Assert(rec.Addr()).Equals("192.168.1.3")
-		c.Assert(rec.Addr()).Equals("192.168.1.1")
-		c.Assert(rec.Addr()).Equals("192.168.1.2")
-		c.Assert(rec.Addr()).Equals("192.168.1.3")
-		c.Assert(rec.Addr()).Equals("192.168.1.1")
+		c.Assert(nextAddr(rec)).Equals("192.168.1.1")
+		c.Assert(nextAddr(rec)).Equals("192.168.1.2")
+		c.Assert(nextAddr(rec)).Equals("192.168.1.3")
+		c.Assert(nextAddr(rec)).Equals("192.168.1.1")
+		c.Assert(nextAddr(rec)).Equals("192.168.1.2")
+		c.Assert(nextAddr(rec)).Equals("192.168.1.3")
+		c.Assert(nextAddr(rec)).Equals("192.168.1.1")
 	})
 
 	c.It("should know when its inside its TTL", func(c *spec.C) {
 		rec := Record(time.Minute, []string{"192.168.1.1"})
-		c.Assert(rec.Expired()).IsFalse()
-		rec.expires = time.Now()
-		c.Assert(rec.Expired()).IsTrue()
+		c.Assert(isExpired(rec)).IsFalse()
+		rec = Record(time.Duration(-1), []string{"192.168.1.1"})
+		c.Assert(isExpired(rec)).IsTrue()
 	})
 
 	c.It("should (probably) ignore ipv6 hosts", func(c *spec.C) {
@@ -34,8 +55,8 @@ var _ = spec.Suite("Record", func(c *spec.C) {
 			"2607:f8b0:4004:801::1003",
 		})
 		c.Assert(rec.addrs).HasLen(1)
-		c.Assert(rec.Addr()).Equals("74.125.228.32")
-		c.Assert(rec.Addr()).Equals("74.125.228.32")
+		c.Assert(nextAddr(rec)).Equals("74.125.228.32")
+		c.Assert(nextAddr(rec)).Equals("74.125.228.32")
 	})
 })
 
