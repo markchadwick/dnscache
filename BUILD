@@ -8,6 +8,7 @@ go_library(
         "cache.go",
         "roundtripper.go",
     ],
+    visibility = ["//visibility:public"],
     deps = [
         "@com_github_rcrowley_go_metrics//:go_default_library",
     ],
